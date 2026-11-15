@@ -1,5 +1,9 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.config.BookingRedisProperties;
 import com.hmdp.entity.BookingOrder;
 import com.hmdp.entity.Venue;
@@ -9,6 +13,7 @@ import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
 import com.hmdp.utils.RedisConstants;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -41,10 +46,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 /** 仅连接显式测试地址；不加载 Spring Boot 或业务连接配置。 */
 @EnabledIfSystemProperty(named = "booking.redis-integration", matches = "true")
@@ -182,35 +183,6 @@ class BookingRedisIntegrationTest {
         assertTrue(redis.hasKey(prefix + "cache:booking:venue:1"));
         assertEquals(-1L, redis.getExpire(prefix + "cache:booking:venue:1"));
         assertEquals("新场馆", cache.get("venue:1", Venue.class, () -> null).getName());
-    }
-
-    @Test
-    void rateLimitIsAtomicAndHasBoundedLifetime() throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(8);
-        AtomicInteger accepted = new AtomicInteger();
-        try {
-            List<Future<?>> tasks = new ArrayList<>();
-            for (int i = 0; i < 16; i++) {
-                tasks.add(
-                        pool.submit(
-                                () -> {
-                                    try {
-                                        guard.checkRate(7L);
-                                        accepted.incrementAndGet();
-                                    } catch (BookingException expected) {
-                                    }
-                                }));
-            }
-            for (Future<?> task : tasks) {
-                task.get(5, TimeUnit.SECONDS);
-            }
-        } finally {
-            pool.shutdownNow();
-        }
-        assertEquals(1, accepted.get());
-        Long ttl = redis.getExpire(prefix + RedisConstants.BOOKING_RATE_KEY + 7L);
-        assertTrue(ttl >= 0 && ttl <= 2);
-        guard.checkRate(8L);
     }
 
     @Test

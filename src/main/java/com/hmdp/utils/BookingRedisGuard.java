@@ -1,9 +1,13 @@
 package com.hmdp.utils;
 
+import static com.hmdp.utils.RedisConstants.*;
+
 import com.hmdp.config.BookingRedisProperties;
 import com.hmdp.entity.BookingOrder;
 import com.hmdp.entity.VenueSlot;
+
 import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -15,9 +19,6 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-
-import static com.hmdp.utils.RedisConstants.*;
 
 /** Redis 辅助预约校验，MySQL 条件更新及唯一约束仍为最终保障。 */
 @Slf4j
@@ -38,29 +39,6 @@ public class BookingRedisGuard {
         script.setLocation(new ClassPathResource(name));
         script.setResultType(Long.class);
         return script;
-    }
-
-    public void checkRate(Long userId) {
-        if (!properties.isEnabled()) {
-            return;
-        }
-
-        // 1.通过 SET NX 和短过期时间，限制同一用户频繁提交
-        Boolean accepted;
-        try {
-            accepted =
-                    redis.opsForValue()
-                            .setIfAbsent(
-                                    key(BOOKING_RATE_KEY + userId),
-                                    "1",
-                                    Math.max(1, properties.getSubmitIntervalSeconds()),
-                                    TimeUnit.SECONDS);
-        } catch (RuntimeException e) {
-            throw unavailable(e);
-        }
-        if (!Boolean.TRUE.equals(accepted)) {
-            throw new BookingException("提交过于频繁，请稍后重试");
-        }
     }
 
     /** 调用者已在数据库锁内检查开放状态、日期、同行人、每日限制。 */

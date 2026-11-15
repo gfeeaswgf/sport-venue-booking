@@ -1,9 +1,13 @@
 package com.hmdp.controller;
 
 import com.hmdp.annotation.ApiTiming;
+import com.hmdp.annotation.Idempotent;
+import com.hmdp.annotation.OperationLog;
+import com.hmdp.annotation.RateLimit;
 import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IBookingOrderService;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,6 +26,9 @@ public class BookingOrderController {
     private IBookingOrderService bookingOrderService;
 
     @ApiTiming("创建预约")
+    @OperationLog(value = "CREATE_BOOKING", targetType = "ORDER")
+    @RateLimit
+    @Idempotent
     @PostMapping
     public Result create(@RequestBody BookingRequestDTO request) {
         return bookingOrderService.createOrder(request);
@@ -40,6 +47,7 @@ public class BookingOrderController {
     }
 
     @PutMapping("/{id}/cancel")
+    @OperationLog(value = "CANCEL_BOOKING", targetType = "ORDER", idArgument = 0)
     public Result cancel(@PathVariable String id) {
         return bookingOrderService.cancelOrder(id);
     }

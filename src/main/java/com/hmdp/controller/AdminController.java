@@ -1,11 +1,13 @@
 package com.hmdp.controller;
 
+import com.hmdp.annotation.OperationLog;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Venue;
 import com.hmdp.entity.VenueCourt;
 import com.hmdp.entity.VenueSlot;
 import com.hmdp.service.IBookingOrderService;
 import com.hmdp.service.IVenueService;
+
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+
 import javax.annotation.Resource;
 
 @RestController
@@ -34,6 +37,7 @@ public class AdminController {
     }
 
     @PostMapping("/venues")
+    @OperationLog(value = "SAVE_VENUE", targetType = "VENUE")
     public Result saveVenue(@RequestBody Venue venue) {
         return venueService.saveVenue(venue);
     }
@@ -44,6 +48,7 @@ public class AdminController {
     }
 
     @PostMapping("/courts")
+    @OperationLog(value = "SAVE_COURT", targetType = "COURT")
     public Result saveCourt(@RequestBody VenueCourt court) {
         return venueService.saveCourt(court);
     }
@@ -56,11 +61,13 @@ public class AdminController {
     }
 
     @PostMapping("/slots")
+    @OperationLog(value = "PUBLISH_SLOT", targetType = "SLOT")
     public Result publish(@RequestBody VenueSlot slot) {
         return venueService.publishSlot(slot);
     }
 
     @PutMapping("/slots/{id}/enabled")
+    @OperationLog(value = "SET_SLOT_ENABLED", targetType = "SLOT", idArgument = 0)
     public Result enabled(@PathVariable Long id, @RequestParam boolean enabled) {
         return venueService.setSlotEnabled(id, enabled);
     }
@@ -73,6 +80,7 @@ public class AdminController {
     }
 
     @PutMapping("/orders/{id}/verify")
+    @OperationLog(value = "VERIFY_BOOKING", targetType = "ORDER", idArgument = 0)
     public Result verify(@PathVariable String id, @RequestParam String code) {
         return bookingOrderService.verifyOrder(id, code);
     }

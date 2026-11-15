@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.json.JSONUtil;
+
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -21,8 +22,10 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.BookingAdminAccess;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
+import com.hmdp.utils.BookingOperationContext;
 import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +35,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+
 import javax.annotation.Resource;
 
 @Service
@@ -61,14 +65,14 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
     @Override
     @Transactional
     public Result createOrder(BookingRequestDTO request) {
-        // 1.获取当前登录用户，校验预约参数并限制重复提交频率
+        BookingOperationContext.trackTransaction();
+        // 1.获取当前登录用户并校验预约参数，请求限流和幂等由控制器切面处理
         Long userId = BookingRules.currentUserId();
         if (request == null
                 || request.getSlotId() == null
                 || !Boolean.TRUE.equals(request.getAgreement())) {
             throw new BookingException("请选择时段并阅读同意预约须知");
         }
-        bookingRedisGuard.checkRate(userId);
 
         // 2.读取本人已保存的资料，预约人信息以服务端为准
         BookingProfileDTO profile = (BookingProfileDTO) userService.queryProfile().getData();
@@ -211,6 +215,7 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
     @Override
     @Transactional
     public Result cancelOrder(String id) {
+        BookingOperationContext.trackTransaction();
         // 1.确认订单属于当前用户，再加锁读取最新订单状态
         BookingOrder original = ownedOrder(id);
         venueMapper.lockById(original.getVenueId());
@@ -244,6 +249,7 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
     @Override
     @Transactional
     public Result verifyOrder(String id, String verifyCode) {
+        BookingOperationContext.trackTransaction();
         // 1.校验管理员身份，定位订单并加锁
         if (!bookingAdminAccess.isAdmin(BookingRules.currentUserId())) {
             throw new BookingException("无管理权限");

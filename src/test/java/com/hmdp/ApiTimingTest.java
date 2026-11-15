@@ -1,9 +1,15 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+
 import com.hmdp.aspect.ApiTimingAspect;
 import com.hmdp.config.WebExceptionAdvice;
 import com.hmdp.controller.BookingOrderController;
@@ -11,6 +17,7 @@ import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IBookingOrderService;
 import com.hmdp.utils.BookingException;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,7 +28,6 @@ import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DuplicateKeyException;
@@ -42,17 +48,11 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-
 /** 仅启动真实 AOP 代理和 MVC 测试，不加载业务连接配置。 */
 @SpringJUnitConfig(ApiTimingTest.Config.class)
 class ApiTimingTest {
     @Configuration
-    @Import(AopAutoConfiguration.class)
-    @ComponentScan(basePackageClasses = ApiTimingAspect.class)
+    @Import({AopAutoConfiguration.class, ApiTimingAspect.class})
     static class Config {
         @Bean
         BookingOrderController bookingController() {
@@ -65,9 +65,11 @@ class ApiTimingTest {
         }
     }
 
-    @Autowired BookingOrderController controller;
+    @Autowired
+    BookingOrderController controller;
 
-    @Autowired IBookingOrderService orders;
+    @Autowired
+    IBookingOrderService orders;
     MockMvc mvc;
     Logger logger;
     Level oldLevel;

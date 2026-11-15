@@ -1,11 +1,16 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.config.BookingRedisProperties;
 import com.hmdp.entity.BookingOrder;
 import com.hmdp.entity.VenueSlot;
 import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,10 +23,6 @@ import org.springframework.transaction.support.TransactionSynchronizationUtils;
 
 import java.time.*;
 import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 class BookingRedisGuardTest {
     StringRedisTemplate redis;
@@ -52,7 +53,6 @@ class BookingRedisGuardTest {
     @Test
     void disabledRedisPreservesSqlOnlyModeWithoutContactingRedis() {
         properties.setEnabled(false);
-        guard.checkRate(7L);
         guard.reserve(slot, 7L, "order");
         guard.cancelled(new BookingOrder());
         verifyNoInteractions(redis);

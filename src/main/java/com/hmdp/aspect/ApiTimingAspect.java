@@ -3,10 +3,13 @@ package com.hmdp.aspect;
 import com.hmdp.annotation.ApiTiming;
 import com.hmdp.dto.Result;
 import com.hmdp.utils.BookingException;
+
 import lombok.extern.slf4j.Slf4j;
+
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.core.annotation.Order;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestAttributes;
@@ -15,12 +18,14 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.HandlerMapping;
 
 import java.util.Locale;
+
 import javax.servlet.http.HttpServletRequest;
 
 /** 记录被注解方法的耗时，不改变返回值或异常，不记录请求参数。 */
 @Slf4j
 @Aspect
 @Component
+@Order(20)
 public class ApiTimingAspect {
     @Around("@annotation(apiTiming)")
     public Object record(ProceedingJoinPoint point, ApiTiming apiTiming) throws Throwable {

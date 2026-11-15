@@ -1,5 +1,7 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.io.ClassPathResource;
@@ -12,8 +14,6 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 /** 防止打包残留旧后台消费者或旧业务接口，无需连接数据库/Redis。 */
 class ApplicationBoundaryTest {
@@ -47,6 +47,7 @@ class ApplicationBoundaryTest {
                                 "UserServiceImpl",
                                 "UserInfoServiceImpl",
                                 "VenueServiceImpl",
+                                "OperationLogServiceImpl",
                                 "BookingOrderServiceImpl")),
                 components(Service.class));
     }

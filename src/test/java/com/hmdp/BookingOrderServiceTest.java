@@ -1,5 +1,8 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.dto.BookingProfileDTO;
 import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
@@ -19,6 +22,7 @@ import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
 import com.hmdp.utils.UserHolder;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,9 +30,6 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalTime;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 class BookingOrderServiceTest {
     BookingOrderServiceImpl service;
@@ -185,14 +186,6 @@ class BookingOrderServiceTest {
         assertThrows(BookingException.class, () -> service.cancelOrder("mine"));
         verify(slots, times(1)).release(100L);
         verify(guard).cancelled(order);
-    }
-
-    @Test
-    void rateLimitStopsRequestBeforeProfileAndDatabaseReads() {
-        doThrow(new BookingException("提交过于频繁，请稍后重试")).when(guard).checkRate(7L);
-        assertThrows(BookingException.class, () -> service.createOrder(request()));
-        verify(users, never()).queryProfile();
-        verify(slots, never()).selectById(anyLong());
     }
 
     @Test

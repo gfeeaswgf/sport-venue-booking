@@ -1,6 +1,7 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.json.JSONUtil;
+
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
@@ -15,7 +16,9 @@ import com.hmdp.service.IVenueService;
 import com.hmdp.utils.BookingAdminAccess;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
+import com.hmdp.utils.BookingOperationContext;
 import com.hmdp.utils.BookingRules;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,6 +30,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+
 import javax.annotation.Resource;
 
 @Service
@@ -267,6 +271,7 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
     @Override
     @Transactional
     public Result saveVenue(Venue input) {
+        BookingOperationContext.trackTransaction();
         requireAdmin();
 
         // 1.校验场馆资料、分类、取消时限和开放状态
@@ -316,6 +321,7 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
     @Override
     @Transactional
     public Result saveCourt(VenueCourt input) {
+        BookingOperationContext.trackTransaction();
         requireAdmin();
         if (input.getVenueId() == null || baseMapper.lockById(input.getVenueId()) == null) {
             throw new BookingException("请选择有效场馆");
@@ -367,6 +373,7 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
     @Override
     @Transactional
     public Result publishSlot(VenueSlot input) {
+        BookingOperationContext.trackTransaction();
         requireAdmin();
 
         // 1.定位场地并锁定所属资源，校验开放状态和预约时间
@@ -416,6 +423,7 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
     @Override
     @Transactional
     public Result setSlotEnabled(Long id, boolean enabled) {
+        BookingOperationContext.trackTransaction();
         requireAdmin();
 
         // 1.读取并锁定场次，已存在预约时不允许更改开放状态
