@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.hmdp.config.BookingControlsProperties;
 import com.hmdp.config.BookingRedisProperties;
-import com.hmdp.dto.IdempotencyRecord;
 import com.hmdp.dto.OperationLogDTO;
 import com.hmdp.service.impl.OperationLogServiceImpl;
 import com.hmdp.utils.BookingException;
@@ -144,65 +143,6 @@ class BookingControlsRedisTest {
         Thread.sleep(220);
         guard.checkRate(7L, 100L, "third");
         assertThrows(BookingException.class, () -> guard.checkRate(7L, 100L, "fourth"));
-    }
-
-    @Test
-    void concurrentDuplicatesOnlyAcquireOneProcessingRecord() throws Exception {
-        key(7L, "duplicate");
-        ExecutorService pool = Executors.newFixedThreadPool(8);
-        CountDownLatch start = new CountDownLatch(1);
-        List<Future<String>> results = new ArrayList<>();
-        try {
-            for (int i = 0; i < 8; i++) {
-                final String owner = "owner-" + i;
-                results.add(
-                        pool.submit(
-                                () -> {
-                                    start.await();
-                                    return guard.begin(7L, "duplicate", "same", owner).getState();
-                                }));
-            }
-            start.countDown();
-            int acquired = 0;
-            for (Future<String> result : results) {
-                if ("ACQUIRED".equals(result.get(5, TimeUnit.SECONDS))) {
-                    acquired++;
-                }
-            }
-            assertEquals(1, acquired);
-        } finally {
-            pool.shutdownNow();
-        }
-    }
-
-    @Test
-    void successfulResultIsReplayedForThreeDaysWithoutRenewal() {
-        String key = key(7L, "request");
-        assertEquals("ACQUIRED", guard.begin(7L, "request", "fingerprint", "owner").getState());
-        assertTrue(redis.getExpire(key) <= 120);
-        assertEquals("PROCESSING", guard.begin(7L, "request", "fingerprint", "other").getState());
-        assertTrue(guard.complete(7L, "request", "fingerprint", "owner", "order-1"));
-        assertTrue(redis.getExpire(key) >= 259198);
-        redis.expire(key, 60, TimeUnit.SECONDS);
-        IdempotencyRecord replay = guard.begin(7L, "request", "fingerprint", "retry");
-        assertEquals("SUCCESS", replay.getState());
-        assertEquals("order-1", replay.getOrderId());
-        assertTrue(redis.getExpire(key) <= 60);
-    }
-
-    @Test
-    void contentConflictsAndStaleOwnersCannotChangeAnotherExecution() {
-        String key = key(7L, "request");
-        guard.begin(7L, "request", "original", "old");
-        assertEquals("CONFLICT", guard.begin(7L, "request", "changed", "other").getState());
-        assertFalse(guard.release(7L, "request", "original", "wrong"));
-        assertTrue(guard.release(7L, "request", "original", "old"));
-        guard.begin(7L, "request", "original", "new");
-        assertFalse(guard.release(7L, "request", "original", "old"));
-        assertFalse(guard.complete(7L, "request", "original", "old", "stale-order"));
-        assertEquals("new", redis.opsForHash().get(key, "owner"));
-        assertEquals("ACQUIRED", guard.begin(8L, "request", "original", "independent").getState());
-        key(8L, "request");
     }
 
     @Test

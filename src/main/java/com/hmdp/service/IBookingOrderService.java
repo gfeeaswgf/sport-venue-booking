@@ -1,12 +1,12 @@
 package com.hmdp.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.BookingOrder;
+import com.hmdp.entity.BookingRequestTask;
 
 public interface IBookingOrderService extends IService<BookingOrder> {
-    Result createOrder(BookingRequestDTO request);
+    BookingOrder createAcceptedOrder(BookingRequestTask request);
 
     Result listOrders(String status, Integer current, boolean admin);
 

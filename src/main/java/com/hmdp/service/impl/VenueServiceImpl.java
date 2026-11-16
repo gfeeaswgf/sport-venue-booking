@@ -14,6 +14,7 @@ import com.hmdp.mapper.VenueMapper;
 import com.hmdp.mapper.VenueSlotMapper;
 import com.hmdp.service.IVenueService;
 import com.hmdp.utils.BookingAdminAccess;
+import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingOperationContext;
@@ -35,6 +36,8 @@ import javax.annotation.Resource;
 
 @Service
 public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements IVenueService {
+    @Resource
+    private BookingAdmissionRedis admission;
     @Resource
     private VenueCourtMapper courtMapper;
 
@@ -256,6 +259,9 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
         // 3.每次根据当前时间和剩余名额计算是否可预约
         for (VenueSlot slot : slots) {
             slot.setRemaining(Math.max(0, slot.getCapacity() - slot.getBookedCount()));
+            if (!admin) {
+                slot.setRemaining(admission.remaining(slot.getId(), slot.getRemaining()));
+            }
             boolean open =
                     Boolean.TRUE.equals(venue.getEnabled())
                             && Boolean.TRUE.equals(court.getEnabled())

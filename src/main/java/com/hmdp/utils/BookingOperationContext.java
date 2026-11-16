@@ -62,6 +62,8 @@ public final class BookingOperationContext {
         private String transactionState = "NONE";
         private String executionType = "EXECUTED";
         private String idempotencyKeyHash;
+        private String idempotencyKey;
+        private String requestFingerprint;
         private String targetId;
     }
 }

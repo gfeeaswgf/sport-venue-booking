@@ -1,6 +1,7 @@
 package com.hmdp.aspect;
 
 import com.hmdp.annotation.OperationLog;
+import com.hmdp.dto.BookingSubmissionDTO;
 import com.hmdp.dto.OperationLogDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IOperationLogService;
@@ -61,6 +62,13 @@ public class OperationLogAspect {
             record.setOutcome(rejected ? "REJECTED" : "SUCCESS");
             if (!rejected && record.getTargetId() == null && result instanceof Result) {
                 Object id = ((Result) result).getData();
+                if (id instanceof BookingSubmissionDTO) {
+                    BookingSubmissionDTO submission = (BookingSubmissionDTO) id;
+                    record.setTargetId(submission.getRequestId());
+                    if ("FAILED".equals(submission.getState())) {
+                        record.setOutcome("REJECTED");
+                    }
+                }
                 if (id instanceof String || id instanceof Long) {
                     record.setTargetId(String.valueOf(id));
                 }

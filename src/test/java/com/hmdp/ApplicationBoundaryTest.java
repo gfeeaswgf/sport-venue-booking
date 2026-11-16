@@ -15,16 +15,21 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/** 防止打包残留旧后台消费者或旧业务接口，无需连接数据库/Redis。 */
+/** 防止打包残留旧团购组件，允许预约请求和MQ恢复组件，无需业务连接。 */
 class ApplicationBoundaryTest {
     private Set<String> components(Class<? extends Annotation> annotation) {
         ClassPathScanningCandidateComponentProvider scan =
                 new ClassPathScanningCandidateComponentProvider(false);
         scan.addIncludeFilter(new AnnotationTypeFilter(annotation));
-        return scan.findCandidateComponents("com.hmdp").stream()
-                .map(bean -> bean.getBeanClassName())
-                .map(name -> name.substring(name.lastIndexOf('.') + 1))
-                .collect(Collectors.toSet());
+        // 只扫描生产包，独立MVC测试夹具不应成为应用边界的一部分。
+        return (annotation == RestController.class
+                        ? Arrays.asList("com.hmdp.controller")
+                        : Arrays.asList("com.hmdp.service", "com.hmdp.mq"))
+                .stream()
+                        .flatMap(basePackage -> scan.findCandidateComponents(basePackage).stream())
+                        .map(bean -> bean.getBeanClassName())
+                        .map(name -> name.substring(name.lastIndexOf('.') + 1))
+                        .collect(Collectors.toSet());
     }
 
     @Test
@@ -35,6 +40,7 @@ class ApplicationBoundaryTest {
                                 "AdminController",
                                 "VenueController",
                                 "BookingOrderController",
+                                "BookingRequestController",
                                 "UserController")),
                 components(RestController.class));
     }
@@ -48,6 +54,11 @@ class ApplicationBoundaryTest {
                                 "UserInfoServiceImpl",
                                 "VenueServiceImpl",
                                 "OperationLogServiceImpl",
+                                "AsyncBookingServiceImpl",
+                                "BookingRequestPersistenceServiceImpl",
+                                "BookingRequestWorkerServiceImpl",
+                                "BookingCompletionServiceImpl",
+                                "RocketMqBookingMessageService",
                                 "BookingOrderServiceImpl")),
                 components(Service.class));
     }

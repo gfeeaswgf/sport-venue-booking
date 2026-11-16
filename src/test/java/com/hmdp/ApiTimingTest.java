@@ -10,12 +10,11 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.hmdp.annotation.ApiTiming;
 import com.hmdp.aspect.ApiTimingAspect;
 import com.hmdp.config.WebExceptionAdvice;
-import com.hmdp.controller.BookingOrderController;
 import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
-import com.hmdp.service.IBookingOrderService;
 import com.hmdp.utils.BookingException;
 
 import org.junit.jupiter.api.AfterEach;
@@ -40,6 +39,7 @@ import org.springframework.transaction.support.DefaultTransactionStatus;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,6 +48,8 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.annotation.Resource;
+
 /** 仅启动真实 AOP 代理和 MVC 测试，不加载业务连接配置。 */
 @SpringJUnitConfig(ApiTimingTest.Config.class)
 class ApiTimingTest {
@@ -55,21 +57,51 @@ class ApiTimingTest {
     @Import({AopAutoConfiguration.class, ApiTimingAspect.class})
     static class Config {
         @Bean
-        BookingOrderController bookingController() {
-            return new BookingOrderController();
+        TimingController bookingController() {
+            return new TimingController();
         }
 
         @Bean
-        IBookingOrderService bookingOrderService() {
-            return mock(IBookingOrderService.class);
+        TimingOperations timingOperations() {
+            return mock(TimingOperations.class);
         }
     }
 
-    @Autowired
-    BookingOrderController controller;
+    /** 专用夹具只验证计时切面，不依赖预约受理协议。 */
+    interface TimingOperations {
+        Result execute(BookingRequestDTO request);
 
-    @Autowired
-    IBookingOrderService orders;
+        Result list();
+
+        Result cancel(String id);
+    }
+
+    @RestController
+    @RequestMapping("/timing/operations")
+    static class TimingController {
+        @Resource
+        private TimingOperations operations;
+
+        @ApiTiming("测试计时接口")
+        @PostMapping
+        public Result create(@RequestBody BookingRequestDTO request) {
+            return operations.execute(request);
+        }
+
+        @GetMapping
+        public Result list() {
+            return operations.list();
+        }
+
+        @PutMapping("/{id}/cancel")
+        public Result cancel(@PathVariable String id) {
+            return operations.cancel(id);
+        }
+    }
+
+    @Autowired TimingController controller;
+
+    @Autowired TimingOperations operations;
     MockMvc mvc;
     Logger logger;
     Level oldLevel;
@@ -78,7 +110,7 @@ class ApiTimingTest {
 
     @BeforeEach
     void setup() {
-        reset(orders);
+        reset(operations);
         logger = (Logger) LoggerFactory.getLogger(ApiTimingAspect.class);
         oldLevel = logger.getLevel();
         logger.setLevel(Level.INFO);
@@ -99,7 +131,7 @@ class ApiTimingTest {
     }
 
     String timing(String outcome) {
-        assertEquals(1, logs.list.size(), "每次进入创建预约方法只记录一条计时日志");
+        assertEquals(1, logs.list.size(), "每次进入测试计时接口方法只记录一条计时日志");
         String message = logs.list.get(0).getFormattedMessage();
         assertTrue(message.contains("outcome=" + outcome));
         Matcher duration = Pattern.compile("durationMs=(\\d+\\.\\d{3})(?: |$)").matcher(message);
@@ -111,9 +143,9 @@ class ApiTimingTest {
     @Test
     void bootAopRecordsCreateWithoutChangingPayloadOrLoggingSensitiveData() throws Exception {
         assertTrue(AopUtils.isAopProxy(controller));
-        when(orders.createOrder(any())).thenReturn(Result.ok("order-1"));
+        when(operations.execute(any())).thenReturn(Result.ok("order-1"));
         mvc.perform(
-                        post("/booking/orders")
+                        post("/timing/operations")
                                 .contentType("application/json")
                                 .header("authorization", "secret-token")
                                 .content(body))
@@ -122,28 +154,28 @@ class ApiTimingTest {
                 .andExpect(jsonPath("$.data").value("order-1"))
                 .andExpect(jsonPath("$.durationMs").doesNotExist());
         String message = timing("SUCCESS");
-        assertTrue(message.contains("api=创建预约"));
+        assertTrue(message.contains("api=测试计时接口"));
         assertTrue(message.contains("method=POST"));
-        assertTrue(message.contains("path=/booking/orders"));
+        assertTrue(message.contains("path=/timing/operations"));
         assertTrue(message.contains("exception=-"));
         assertFalse(message.contains("secret-token"));
         assertFalse(message.contains("slotId"));
         assertFalse(message.contains("order-1"));
-        verify(orders, times(1)).createOrder(any());
+        verify(operations, times(1)).execute(any());
     }
 
     @Test
     void returnedBusinessFailureIsRejectedAndOriginalObjectIsPreserved() {
         Result original = Result.fail("场次已满");
-        when(orders.createOrder(any())).thenReturn(original);
+        when(operations.execute(any())).thenReturn(original);
         assertSame(original, controller.create(new BookingRequestDTO()));
         timing("REJECTED");
     }
 
     @Test
     void businessExceptionStillUsesExistingAdviceAndDoesNotLogItsMessage() throws Exception {
-        when(orders.createOrder(any())).thenThrow(new BookingException("敏感姓名和手机号不进入计时日志"));
-        mvc.perform(post("/booking/orders").contentType("application/json").content(body))
+        when(operations.execute(any())).thenThrow(new BookingException("敏感姓名和手机号不进入计时日志"));
+        mvc.perform(post("/timing/operations").contentType("application/json").content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.errorMsg").value("敏感姓名和手机号不进入计时日志"));
@@ -154,8 +186,8 @@ class ApiTimingTest {
 
     @Test
     void uniqueConstraintConflictIsBusinessRejection() throws Exception {
-        when(orders.createOrder(any())).thenThrow(new DuplicateKeyException("sensitive sql"));
-        mvc.perform(post("/booking/orders").contentType("application/json").content(body))
+        when(operations.execute(any())).thenThrow(new DuplicateKeyException("sensitive sql"));
+        mvc.perform(post("/timing/operations").contentType("application/json").content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(false));
         String message = timing("REJECTED");
@@ -166,7 +198,7 @@ class ApiTimingTest {
     @Test
     void systemExceptionIsLoggedAndPropagatedWithoutWrapping() {
         IllegalStateException original = new IllegalStateException("private database detail");
-        when(orders.createOrder(any())).thenThrow(original);
+        when(operations.execute(any())).thenThrow(original);
         assertSame(
                 original,
                 assertThrows(
@@ -180,7 +212,7 @@ class ApiTimingTest {
     @Test
     void errorsAlsoPropagateWithoutWrappingAndAreTimedOnce() {
         AssertionError original = new AssertionError("private failure detail");
-        when(orders.createOrder(any())).thenThrow(original);
+        when(operations.execute(any())).thenThrow(original);
         assertSame(
                 original,
                 assertThrows(
@@ -215,7 +247,7 @@ class ApiTimingTest {
                     }
                 };
         BookingException rejected = new BookingException("rollback");
-        when(orders.createOrder(any()))
+        when(operations.execute(any()))
                 .thenAnswer(
                         call ->
                                 new TransactionTemplate(manager)
@@ -270,20 +302,19 @@ class ApiTimingTest {
 
     @Test
     void listAndCancelAreNotIncludedInTimingScope() throws Exception {
-        when(orders.listOrders(any(), any(), anyBoolean()))
-                .thenReturn(Result.ok(Collections.emptyList()));
-        when(orders.cancelOrder("order-1")).thenReturn(Result.ok());
-        mvc.perform(get("/booking/orders")).andExpect(status().isOk());
-        mvc.perform(put("/booking/orders/order-1/cancel")).andExpect(status().isOk());
+        when(operations.list()).thenReturn(Result.ok(Collections.emptyList()));
+        when(operations.cancel("order-1")).thenReturn(Result.ok());
+        mvc.perform(get("/timing/operations")).andExpect(status().isOk());
+        mvc.perform(put("/timing/operations/order-1/cancel")).andExpect(status().isOk());
         assertTrue(logs.list.isEmpty());
     }
 
     @Test
     void invalidJsonBeforeControllerEntryIsNotReportedAsMethodTiming() throws Exception {
-        mvc.perform(post("/booking/orders").contentType("application/json").content("{broken"))
+        mvc.perform(post("/timing/operations").contentType("application/json").content("{broken"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(false));
         assertTrue(logs.list.isEmpty());
-        verifyNoInteractions(orders);
+        verifyNoInteractions(operations);
     }
 }

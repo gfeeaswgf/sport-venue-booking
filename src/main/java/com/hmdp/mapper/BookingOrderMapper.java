@@ -2,11 +2,16 @@ package com.hmdp.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.hmdp.entity.BookingOrder;
+
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface BookingOrderMapper extends BaseMapper<BookingOrder> {
+    @Select(
+            "SELECT COUNT(*) FROM tb_booking_order WHERE venue_id=#{venueId} AND booking_date=#{date}")
+    long countCreated(@Param("venueId") Long venueId, @Param("date") java.time.LocalDate date);
+
     @Select("SELECT * FROM tb_booking_order WHERE id = #{id} FOR UPDATE")
     BookingOrder lockById(@Param("id") String id);
 

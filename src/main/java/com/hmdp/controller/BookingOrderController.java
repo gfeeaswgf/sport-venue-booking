@@ -6,7 +6,9 @@ import com.hmdp.annotation.OperationLog;
 import com.hmdp.annotation.RateLimit;
 import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
+import com.hmdp.service.IAsyncBookingService;
 import com.hmdp.service.IBookingOrderService;
+import com.hmdp.utils.BookingOperationContext;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,13 +27,19 @@ public class BookingOrderController {
     @Resource
     private IBookingOrderService bookingOrderService;
 
-    @ApiTiming("创建预约")
-    @OperationLog(value = "CREATE_BOOKING", targetType = "ORDER")
+    @Resource
+    private IAsyncBookingService asyncBookingService;
+
+    @ApiTiming("受理预约请求")
+    @OperationLog(value = "SUBMIT_BOOKING", targetType = "REQUEST")
     @RateLimit
     @Idempotent
     @PostMapping
     public Result create(@RequestBody BookingRequestDTO request) {
-        return bookingOrderService.createOrder(request);
+        BookingOperationContext.State context = BookingOperationContext.current();
+        return Result.ok(
+                asyncBookingService.accept(
+                        request, context.getIdempotencyKey(), context.getRequestFingerprint()));
     }
 
     @GetMapping

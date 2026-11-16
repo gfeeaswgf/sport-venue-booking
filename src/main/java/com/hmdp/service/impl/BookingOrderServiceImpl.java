@@ -6,20 +6,20 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.BookingCompanionDTO;
-import com.hmdp.dto.BookingProfileDTO;
-import com.hmdp.dto.BookingRequestDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.BookingOrder;
+import com.hmdp.entity.BookingRequestTask;
 import com.hmdp.entity.Venue;
 import com.hmdp.entity.VenueCourt;
 import com.hmdp.entity.VenueSlot;
 import com.hmdp.mapper.BookingOrderMapper;
+import com.hmdp.mapper.BookingRequestMapper;
 import com.hmdp.mapper.VenueCourtMapper;
 import com.hmdp.mapper.VenueMapper;
 import com.hmdp.mapper.VenueSlotMapper;
 import com.hmdp.service.IBookingOrderService;
-import com.hmdp.service.IUserService;
 import com.hmdp.utils.BookingAdminAccess;
+import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingOperationContext;
@@ -27,6 +27,7 @@ import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -51,7 +52,10 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
     private VenueMapper venueMapper;
 
     @Resource
-    private IUserService userService;
+    private BookingRequestMapper bookingRequestMapper;
+
+    @Resource
+    private BookingAdmissionRedis admission;
 
     @Resource
     private BookingAdminAccess bookingAdminAccess;
@@ -63,23 +67,14 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
     private BookingCache bookingCache;
 
     @Override
-    @Transactional
-    public Result createOrder(BookingRequestDTO request) {
-        BookingOperationContext.trackTransaction();
-        // 1.获取当前登录用户并校验预约参数，请求限流和幂等由控制器切面处理
-        Long userId = BookingRules.currentUserId();
-        if (request == null
-                || request.getSlotId() == null
-                || !Boolean.TRUE.equals(request.getAgreement())) {
-            throw new BookingException("请选择时段并阅读同意预约须知");
-        }
+    @Transactional(propagation = Propagation.MANDATORY)
+    public BookingOrder createAcceptedOrder(BookingRequestTask request) {
+        // 1.消费线程不使用UserHolder，身份与本人资料来自受理时的数据库快照。
+        Long userId = request.getUserId();
+        BookingRules.required(request.getRealName(), "预约人姓名", 32);
+        BookingRules.required(request.getStudentNo(), "预约人学号/工号", 32);
 
-        // 2.读取本人已保存的资料，预约人信息以服务端为准
-        BookingProfileDTO profile = (BookingProfileDTO) userService.queryProfile().getData();
-        BookingRules.required(profile.getRealName(), "姓名（请先完善资料）", 32);
-        BookingRules.required(profile.getStudentNo(), "学号/工号（请先完善资料）", 32);
-
-        // 3.根据时段定位所属场地和场馆
+        // 2.根据时段定位所属场地和场馆
         VenueSlot initialSlot = slotMapper.selectById(request.getSlotId());
         if (initialSlot == null) {
             throw new BookingException("预约时段不存在");
@@ -89,7 +84,7 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
             throw new BookingException("场地不存在");
         }
 
-        // 4.按固定顺序锁定资源，重新检查最新开放状态
+        // 3.按固定顺序锁定资源，重新检查最新开放状态
         // 与管理维护、取消、核销使用相同的锁顺序，保证基础业务一致性。
         Venue venue = venueMapper.lockById(initialCourt.getVenueId());
         VenueCourt court = courtMapper.lockById(initialCourt.getId());
@@ -102,15 +97,21 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
                 || !Boolean.TRUE.equals(slot.getEnabled())) {
             throw new BookingException("该场次暂未开放预约");
         }
+        if (!court.getId().equals(request.getCourtId())
+                || !venue.getId().equals(request.getVenueId())
+                || !slot.getBookingDate().equals(request.getBookingDate())) {
+            throw new BookingException("场次资料已变化，请重新预约");
+        }
 
-        // 5.校验预约日期、同行人数和每天仅预约一次的限制
+        // 4.校验预约日期、同行人数和每天仅预约一次的限制
         BookingRules.validateSlot(
                 slot.getBookingDate(), slot.getStartTime(), slot.getEndTime(), BookingRules.now());
+        java.util.List<BookingCompanionDTO> companions =
+                JSONUtil.toList(
+                        JSONUtil.parseArray(request.getCompanionsJson()),
+                        BookingCompanionDTO.class);
         BookingRules.validateCompanions(
-                request.getCompanions(),
-                profile.getStudentNo(),
-                court.getMaxPeople(),
-                court.getMode());
+                companions, request.getStudentNo(), court.getMaxPeople(), court.getMode());
         if (count(
                         new QueryWrapper<BookingOrder>()
                                 .eq("user_id", userId)
@@ -119,15 +120,14 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
             throw new BookingException("每天仅可预约一次，请先查看或取消已有预约");
         }
 
-        // 6.生成订单编号，预占 Redis 名额并扣减数据库容量
+        // 5.预占已在受理入口完成，这里仅以SQL条件更新最终扣减容量。
         BookingOrder order = new BookingOrder();
-        order.setId(UUID.randomUUID().toString().replace("-", ""));
-        bookingRedisGuard.reserve(slot, userId, order.getId());
+        order.setId(request.getId());
         if (slotMapper.acquire(slot.getId()) != 1) {
             throw new BookingException("该场次已约满，请选择其他时段");
         }
 
-        // 7.保存账号、场馆及预约人资料快照，后续改资料不会改变历史订单
+        // 6.保存账号、场馆及预约人资料快照，后续改资料不会改变历史订单
         order.setUserId(userId)
                 .setVenueId(venue.getId())
                 .setCourtId(court.getId())
@@ -138,11 +138,11 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
                 .setActiveDate(slot.getBookingDate())
                 .setStartTime(slot.getStartTime())
                 .setEndTime(slot.getEndTime());
-        order.setRealName(profile.getRealName())
-                .setStudentNo(profile.getStudentNo())
-                .setPhone(profile.getPhone());
-        order.setCompanionsJson(JSONUtil.toJsonStr(request.getCompanions()))
-                .setPeopleCount(request.getCompanions().size() + 1);
+        order.setRealName(request.getRealName())
+                .setStudentNo(request.getStudentNo())
+                .setPhone(request.getPhone());
+        order.setCompanionsJson(JSONUtil.toJsonStr(companions))
+                .setPeopleCount(companions.size() + 1);
         order.setStatus("RESERVED")
                 .setVerifyCode(
                         UUID.randomUUID()
@@ -153,12 +153,12 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
         order.setCancelAdvanceMinutes(venue.getCancelAdvanceMinutes())
                 .setCreateTime(BookingRules.now());
 
-        // 8.保存预约订单，事务提交成功后删除对应场次缓存
+        // 7.保存预约订单，事务提交成功后删除对应场次缓存
         if (!save(order)) {
             throw new BookingException("预约失败，请重试");
         }
         bookingCache.slotsChanged(slot.getCourtId(), slot.getBookingDate());
-        return Result.ok(order.getId());
+        return order;
     }
 
     @Override
@@ -235,12 +235,19 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
         if (baseMapper.cancel(id, order.getUserId()) != 1) {
             throw new BookingException("订单状态已变化，请刷新");
         }
+        bookingRequestMapper.releaseDate(id, order.getUserId(), BookingRules.now());
 
         // 3.归还数据库名额，提交后清理本订单的 Redis 标记和场次缓存
         if (slotMapper.release(order.getSlotId()) != 1) {
             throw new BookingException("名额释放失败，请联系管理员");
         }
         bookingRedisGuard.cancelled(order);
+        BookingRequestTask request = new BookingRequestTask();
+        request.setId(order.getId());
+        request.setUserId(order.getUserId());
+        request.setSlotId(order.getSlotId());
+        request.setBookingDate(order.getBookingDate());
+        com.hmdp.utils.BookingTransactions.afterCommit(() -> admission.release(request));
         VenueSlot slot = slotMapper.selectById(order.getSlotId());
         bookingCache.slotsChanged(slot.getCourtId(), slot.getBookingDate());
         return Result.ok();

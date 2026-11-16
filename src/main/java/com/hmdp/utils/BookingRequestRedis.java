@@ -2,7 +2,6 @@ package com.hmdp.utils;
 
 import com.hmdp.config.BookingControlsProperties;
 import com.hmdp.config.BookingRedisProperties;
-import com.hmdp.dto.IdempotencyRecord;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -12,7 +11,6 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /** 封装请求限流及幂等状态，和库存预占 BookingRedisGuard 分开管理。 */
@@ -20,13 +18,10 @@ import java.util.List;
 @Component
 public class BookingRequestRedis {
     private static final DefaultRedisScript<Long> RATE = new DefaultRedisScript<>();
-    private static final DefaultRedisScript<List> IDEMPOTENCY = new DefaultRedisScript<>();
 
     static {
         RATE.setLocation(new ClassPathResource("booking-rate-limit.lua"));
         RATE.setResultType(Long.class);
-        IDEMPOTENCY.setLocation(new ClassPathResource("booking-idempotency.lua"));
-        IDEMPOTENCY.setResultType(List.class);
     }
 
     private final StringRedisTemplate redis;
@@ -66,50 +61,6 @@ public class BookingRequestRedis {
         } catch (RuntimeException failure) {
             throw unavailable(failure);
         }
-    }
-
-    public IdempotencyRecord begin(Long userId, String key, String fingerprint, String owner) {
-        try {
-            List result = execute("begin", userId, key, fingerprint, owner, "");
-            if (result == null || result.isEmpty()) {
-                throw new IllegalStateException("Redis未返回幂等状态");
-            }
-            String state = String.valueOf(result.get(0));
-            String orderId = result.size() > 1 ? String.valueOf(result.get(1)) : null;
-            return new IdempotencyRecord(state, orderId);
-        } catch (RuntimeException failure) {
-            throw unavailable(failure);
-        }
-    }
-
-    public boolean complete(
-            Long userId, String key, String fingerprint, String owner, String orderId) {
-        List result = execute("complete", userId, key, fingerprint, owner, orderId);
-        return result != null && !result.isEmpty() && "OK".equals(result.get(0));
-    }
-
-    public boolean release(Long userId, String key, String fingerprint, String owner) {
-        List result = execute("release", userId, key, fingerprint, owner, "");
-        return result != null && !result.isEmpty() && "OK".equals(result.get(0));
-    }
-
-    private List execute(
-            String action,
-            Long userId,
-            String key,
-            String fingerprint,
-            String owner,
-            String orderId) {
-        String redisKey = cache.getNamespace() + "booking:idempotent:CREATE:" + userId + ":" + key;
-        return redis.execute(
-                IDEMPOTENCY,
-                Collections.singletonList(redisKey),
-                action,
-                fingerprint,
-                owner,
-                String.valueOf(controls.getProcessingTtlSeconds()),
-                String.valueOf(controls.getSuccessTtlSeconds()),
-                orderId);
     }
 
     private void addLimit(List<String> keys, List<String> arguments, String dimension, int limit) {

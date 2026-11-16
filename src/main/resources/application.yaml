@@ -25,5 +25,9 @@ mybatis-plus:
 logging:
   level:
     com.hmdp: debug
+    # 待办每500毫秒扫描一次，只关闭这条SQL的DEBUG日志。
+    com.hmdp.mapper.BookingRequestMapper.findDue: info
 booking:
+  mq:
+    name-server: "198.168.223.128:9876"
   admin-user-ids: "1013"

@@ -1,5 +1,8 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.config.BookingRedisProperties;
 import com.hmdp.entity.Venue;
 import com.hmdp.entity.VenueCourt;
@@ -10,6 +13,7 @@ import com.hmdp.mapper.VenueSlotMapper;
 import com.hmdp.service.impl.VenueServiceImpl;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingRules;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,9 +42,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 class BookingRedisCacheTest {
     StringRedisTemplate redis;
@@ -331,6 +332,10 @@ class BookingRedisCacheTest {
         ReflectionTestUtils.setField(service, "courtMapper", courts);
         ReflectionTestUtils.setField(service, "slotMapper", slots);
         ReflectionTestUtils.setField(service, "bookingCache", cache);
+        com.hmdp.utils.BookingAdmissionRedis admission =
+                mock(com.hmdp.utils.BookingAdmissionRedis.class);
+        when(admission.remaining(any(), anyInt())).thenAnswer(call -> call.getArgument(1));
+        ReflectionTestUtils.setField(service, "admission", admission);
         when(venues.selectList(any()))
                 .thenReturn(Collections.singletonList(new Venue().setId(1L).setName("羽毛球馆")));
         service.listVenues(null, "BADMINTON", false);
