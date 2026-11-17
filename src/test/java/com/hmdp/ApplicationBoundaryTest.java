@@ -57,7 +57,7 @@ class ApplicationBoundaryTest {
                                 "AsyncBookingServiceImpl",
                                 "BookingRequestPersistenceServiceImpl",
                                 "BookingRequestWorkerServiceImpl",
-                                "BookingCompletionServiceImpl",
+                                "BookingResultServiceImpl",
                                 "RocketMqBookingMessageService",
                                 "BookingOrderServiceImpl")),
                 components(Service.class));
@@ -68,6 +68,15 @@ class ApplicationBoundaryTest {
         assertFalse(new ClassPathResource("seckill.lua").exists());
         assertFalse(new ClassPathResource("unlock.lua").exists());
         assertFalse(new ClassPathResource("mapper/VoucherMapper.xml").exists());
+        assertFalse(new ClassPathResource("booking-reserve.lua").exists());
+        assertFalse(new ClassPathResource("booking-complete.lua").exists());
+        assertFalse(new ClassPathResource("booking-created-stat.lua").exists());
+        assertThrows(
+                ClassNotFoundException.class,
+                () -> Class.forName("com.hmdp.utils.BookingProcessingMetrics"));
+        assertThrows(
+                ClassNotFoundException.class,
+                () -> Class.forName("com.hmdp.utils.BookingRedisGuard"));
         assertThrows(
                 ClassNotFoundException.class,
                 () -> Class.forName("com.hmdp.config.RedissonConfig"));

@@ -1,5 +1,9 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.entity.Venue;
 import com.hmdp.entity.VenueCourt;
 import com.hmdp.entity.VenueSlot;
@@ -8,6 +12,7 @@ import com.hmdp.mapper.VenueMapper;
 import com.hmdp.mapper.VenueSlotMapper;
 import com.hmdp.service.impl.VenueServiceImpl;
 import com.hmdp.utils.BookingCache;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -18,10 +23,6 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 class BookingRollingSlotsTest {
     private VenueServiceImpl service;
@@ -58,12 +59,70 @@ class BookingRollingSlotsTest {
         when(venues.lockById(1001L)).thenReturn(venue);
         when(courts.selectList(any())).thenReturn(Collections.singletonList(court));
         when(slots.selectList(any())).thenAnswer(call -> new ArrayList<>(stored));
+        when(slots.findWindowForCourts(anyList(), any(), any()))
+                .thenAnswer(call -> new ArrayList<>(stored));
+        when(slots.insertBatch(anyList()))
+                .thenAnswer(
+                        call -> {
+                            List<VenueSlot> batch = call.getArgument(0);
+                            int count = batch.size();
+                            stored.addAll(batch);
+                            return count;
+                        });
         when(slots.insert(any(VenueSlot.class)))
                 .thenAnswer(
                         call -> {
                             stored.add(call.getArgument(0));
                             return 1;
                         });
+    }
+
+    @Test
+    void missingSlotsDoNotRequireOneInsertCallPerSlot() {
+        assertEquals(91, service.ensureRollingSlots(1001L, morning));
+        verify(slots, never()).insert(any(VenueSlot.class));
+        verify(slots)
+                .findWindowForCourts(
+                        Collections.singletonList(1101L),
+                        morning.toLocalDate(),
+                        morning.toLocalDate().plusDays(6));
+        verify(slots, never()).selectList(any());
+        verify(slots).insertBatch(anyList());
+    }
+
+    @Test
+    void multipleCourtsShareOneWindowReadAndUseBoundedBatches() {
+        VenueCourt second =
+                new VenueCourt()
+                        .setId(1102L)
+                        .setVenueId(1001L)
+                        .setEnabled(true)
+                        .setMode("COURT")
+                        .setCapacity(1)
+                        .setMaxPeople(6);
+        VenueCourt third =
+                new VenueCourt()
+                        .setId(1103L)
+                        .setVenueId(1001L)
+                        .setEnabled(true)
+                        .setMode("COURT")
+                        .setCapacity(1)
+                        .setMaxPeople(6);
+        when(courts.selectList(any())).thenReturn(java.util.Arrays.asList(court, second, third));
+        List<Integer> batchSizes = new ArrayList<>();
+        when(slots.insertBatch(anyList()))
+                .thenAnswer(
+                        call -> {
+                            List<VenueSlot> batch = call.getArgument(0);
+                            batchSizes.add(batch.size());
+                            stored.addAll(batch);
+                            return batch.size();
+                        });
+        assertEquals(273, service.ensureRollingSlots(1001L, morning));
+        assertEquals(java.util.Arrays.asList(200, 73), batchSizes);
+        verify(slots).findWindowForCourts(anyList(), any(), any());
+        assertEquals(0, service.ensureRollingSlots(1001L, morning));
+        assertEquals(273, stored.size());
     }
 
     @Test

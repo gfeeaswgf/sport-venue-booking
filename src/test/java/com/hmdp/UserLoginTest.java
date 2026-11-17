@@ -1,11 +1,15 @@
 package com.hmdp;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.impl.UserServiceImpl;
 import com.hmdp.utils.RedisConstants;
+
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.HashOperations;
@@ -14,9 +18,6 @@ import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 /** 旧业务删除后，验证码登录、自动注册和 Redis Token 仍可用。 */
 class UserLoginTest {
@@ -42,7 +43,7 @@ class UserLoginTest {
         LoginFormDTO form = new LoginFormDTO();
         form.setPhone("13812345678");
         form.setCode("123456");
-        Result result = service.login(form, null);
+        Result result = service.login(form);
         assertTrue(result.getSuccess());
         assertNotNull(result.getData());
         ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);

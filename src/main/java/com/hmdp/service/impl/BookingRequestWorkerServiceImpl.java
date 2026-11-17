@@ -6,6 +6,7 @@ import com.hmdp.service.IBookingOrderService;
 import com.hmdp.service.IBookingRequestWorkerService;
 import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingException;
+import com.hmdp.utils.BookingResultSignal;
 import com.hmdp.utils.BookingRules;
 import com.hmdp.utils.BookingTransactions;
 
@@ -27,6 +28,9 @@ public class BookingRequestWorkerServiceImpl implements IBookingRequestWorkerSer
     @Resource
     private BookingAdmissionRedis admission;
 
+    @Resource
+    private BookingResultSignal resultSignal = new BookingResultSignal();
+
     @Override
     @Transactional
     public BookingRequestTask process(String requestId) {
@@ -41,6 +45,7 @@ public class BookingRequestWorkerServiceImpl implements IBookingRequestWorkerSer
         }
 
         // 2.订单与请求成功状态在同一个事务提交；消息线程不读取UserHolder。
+        BookingTransactions.afterCommit(resultSignal::wakeUp);
         orders.createAcceptedOrder(task);
         if (requests.succeed(task.getId(), now) != 1) {
             throw new IllegalStateException("预约请求状态更新失败");
@@ -60,6 +65,7 @@ public class BookingRequestWorkerServiceImpl implements IBookingRequestWorkerSer
             return task;
         }
         LocalDateTime now = BookingRules.now();
+        BookingTransactions.afterCommit(resultSignal::wakeUp);
         if (requests.fail(task.getId(), reason, now) != 1) {
             throw new IllegalStateException("预约请求失败状态更新未完成");
         }

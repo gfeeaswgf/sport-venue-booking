@@ -5,6 +5,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.hmdp.config.BookingMqProperties;
+import com.hmdp.service.IBookingResultService;
+import com.hmdp.utils.BookingResultEvent;
+import com.hmdp.utils.BookingResultTask;
 
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
@@ -46,9 +49,17 @@ class RocketMqBookingMessageServiceTest {
         service =
                 spy(
                         new RocketMqBookingMessageService(
-                                properties, mock(BookingMessageListener.class)));
+                                properties,
+                                mock(BookingMessageListener.class),
+                                mock(IBookingResultService.class)));
         doReturn(producer).when(service).createProducer();
         doReturn(consumer).when(service).createConsumer();
+        doReturn(mock(DefaultMQPushConsumer.class))
+                .when(service)
+                .createResultConsumer(BookingResultTask.AUDIT);
+        doReturn(mock(DefaultMQPushConsumer.class))
+                .when(service)
+                .createResultConsumer(BookingResultTask.STATS);
     }
 
     @AfterEach
@@ -82,6 +93,20 @@ class RocketMqBookingMessageServiceTest {
         assertEquals("test-booking", message.getValue().getTopic());
         assertEquals(ID, message.getValue().getKeys());
         assertArrayEquals(ID.getBytes(StandardCharsets.US_ASCII), message.getValue().getBody());
+    }
+
+    @Test
+    void resultPublicationUsesOwnTopicAndStableBusinessIdentity() throws Exception {
+        SendResult success = new SendResult();
+        success.setSendStatus(SendStatus.SEND_OK);
+        when(producer.send(any(Message.class), anyLong())).thenReturn(success);
+        startConnected();
+        service.sendResult(ID);
+        ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+        verify(producer).send(message.capture(), anyLong());
+        assertEquals("booking-results", message.getValue().getTopic());
+        assertEquals(ID + ":result:v1", message.getValue().getKeys());
+        assertEquals(ID, BookingResultEvent.decode(message.getValue().getBody()));
     }
 
     @Test

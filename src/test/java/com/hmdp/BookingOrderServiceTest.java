@@ -18,7 +18,6 @@ import com.hmdp.service.impl.BookingOrderServiceImpl;
 import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
-import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
 import com.hmdp.utils.UserHolder;
 
@@ -39,7 +38,6 @@ class BookingOrderServiceTest {
     BookingRequestMapper requests;
     BookingAdmissionRedis admission;
     VenueSlot slot;
-    BookingRedisGuard guard;
     BookingCache cache;
 
     @BeforeEach
@@ -57,9 +55,7 @@ class BookingOrderServiceTest {
         ReflectionTestUtils.setField(service, "courtMapper", courts);
         ReflectionTestUtils.setField(service, "bookingRequestMapper", requests);
         ReflectionTestUtils.setField(service, "admission", admission);
-        guard = mock(BookingRedisGuard.class);
         cache = mock(BookingCache.class);
-        ReflectionTestUtils.setField(service, "bookingRedisGuard", guard);
         ReflectionTestUtils.setField(service, "bookingCache", cache);
         UserDTO login = new UserDTO();
         login.setId(7L);
@@ -129,7 +125,7 @@ class BookingOrderServiceTest {
         assertEquals(slot.getBookingDate(), order.getActiveDate());
         assertEquals("RESERVED", order.getStatus());
         assertNotNull(order.getVerifyCode());
-        verifyNoInteractions(guard, admission);
+        verifyNoInteractions(admission);
         assertNull(UserHolder.getUser());
         verify(cache).slotsChanged(slot.getCourtId(), slot.getBookingDate());
     }
@@ -188,7 +184,13 @@ class BookingOrderServiceTest {
         assertTrue(service.cancelOrder("mine").getSuccess());
         assertThrows(BookingException.class, () -> service.cancelOrder("mine"));
         verify(slots, times(1)).release(100L);
-        verify(guard).cancelled(order);
+        ArgumentCaptor<BookingRequestTask> released =
+                ArgumentCaptor.forClass(BookingRequestTask.class);
+        verify(admission, times(1)).release(released.capture());
+        assertEquals(order.getId(), released.getValue().getId());
+        assertEquals(order.getUserId(), released.getValue().getUserId());
+        assertEquals(order.getSlotId(), released.getValue().getSlotId());
+        assertEquals(order.getBookingDate(), released.getValue().getBookingDate());
     }
 
     @Test

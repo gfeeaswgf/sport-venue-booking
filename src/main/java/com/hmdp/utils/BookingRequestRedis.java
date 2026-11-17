@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 封装请求限流及幂等状态，和库存预占 BookingRedisGuard 分开管理。 */
+/** 封装请求限流及幂等状态，和库存预占 BookingAdmissionRedis 分开管理。 */
 @Slf4j
 @Component
 public class BookingRequestRedis {

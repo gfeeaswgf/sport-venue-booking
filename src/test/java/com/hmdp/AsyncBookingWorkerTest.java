@@ -11,12 +11,16 @@ import com.hmdp.service.IBookingOrderService;
 import com.hmdp.service.impl.BookingRequestWorkerServiceImpl;
 import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingException;
+import com.hmdp.utils.BookingResultSignal;
 import com.hmdp.utils.BookingRules;
 import com.hmdp.utils.UserHolder;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionSynchronizationUtils;
 
 class AsyncBookingWorkerTest {
     BookingRequestMapper requests;
@@ -41,6 +45,40 @@ class AsyncBookingWorkerTest {
         task.setStatus("ACCEPTED");
         task.setExpireTime(BookingRules.now().plusMinutes(10));
         when(requests.lockById(task.getId())).thenReturn(task);
+    }
+
+    @Test
+    void resultPublisherIsNotWokenUntilTransactionCommits() {
+        BookingResultSignal signal = new BookingResultSignal();
+        ReflectionTestUtils.setField(worker, "resultSignal", signal);
+        long observed = signal.beginScan();
+        when(requests.succeed(eq(task.getId()), any())).thenReturn(1);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            worker.process(task.getId());
+            assertEquals(observed, signal.beginScan());
+            TransactionSynchronizationUtils.triggerAfterCommit();
+            assertEquals(observed + 1, signal.beginScan());
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void rolledBackTransactionDoesNotWakeResultPublisher() {
+        BookingResultSignal signal = new BookingResultSignal();
+        ReflectionTestUtils.setField(worker, "resultSignal", signal);
+        long observed = signal.beginScan();
+        when(requests.succeed(eq(task.getId()), any())).thenReturn(1);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            worker.process(task.getId());
+            TransactionSynchronizationUtils.triggerAfterCompletion(
+                    TransactionSynchronization.STATUS_ROLLED_BACK);
+            assertEquals(observed, signal.beginScan());
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test

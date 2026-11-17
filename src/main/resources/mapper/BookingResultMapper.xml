@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hmdp.mapper.BookingResultMapper">
+
+    <!-- 扫描和消费者只读取需要的字段，不加载手机号和同行人资料。 -->
+    <sql id="snapshotColumns">
+        id, user_id, venue_id, booking_date, status, complete_time,
+        next_publish_time, result_event_state, result_publish_count,
+        result_publish_token, audit_state, stats_state
+    </sql>
+
+    <select id="snapshot" resultType="com.hmdp.entity.BookingRequestTask">
+        SELECT <include refid="snapshotColumns"/>
+        FROM tb_booking_request
+        WHERE id = #{id}
+    </select>
+
+    <select id="findDue" resultType="com.hmdp.entity.BookingRequestTask">
+        SELECT <include refid="snapshotColumns"/>
+        FROM tb_booking_request
+        WHERE status = #{status}
+          AND next_publish_time &lt;= #{now}
+          AND result_event_state IN ('PENDING', 'PUBLISHED')
+        ORDER BY next_publish_time, id
+        LIMIT #{limit}
+    </select>
+
+    <update id="claim">
+        UPDATE tb_booking_request
+        SET next_publish_time = #{next},
+            result_publish_count = result_publish_count + 1,
+            result_publish_token = #{token}
+        WHERE id = #{id}
+          AND status IN ('SUCCEEDED', 'FAILED')
+          AND result_event_state IN ('PENDING', 'PUBLISHED')
+          AND next_publish_time &lt;= #{now}
+    </update>
+
+    <update id="published">
+        UPDATE tb_booking_request
+        SET result_event_state = 'PUBLISHED',
+            result_last_publish_time = #{now}
+        WHERE id = #{id}
+          AND result_publish_token = #{token}
+          AND result_event_state IN ('PENDING', 'PUBLISHED')
+    </update>
+
+    <!-- UTC_TIMESTAMP 的语句开始时刻是逻辑裁决点，不承诺物理提交早于截止。 -->
+    <sql id="deadlineCondition">
+        AND (
+            (#{state} = 'DONE' AND UTC_TIMESTAMP(3) &lt; #{deadlineUtc})
+            OR (#{state} = 'EXPIRED' AND UTC_TIMESTAMP(3) &gt;= #{deadlineUtc})
+        )
+    </sql>
+
+    <update id="finishAudit">
+        UPDATE tb_booking_request
+        SET result_event_state = CASE
+                WHEN stats_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN 'COMPLETED'
+                ELSE result_event_state END,
+            next_publish_time = CASE
+                WHEN stats_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN '9999-01-01 00:00:00'
+                ELSE next_publish_time END,
+            result_publish_token = CASE
+                WHEN stats_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN NULL
+                ELSE result_publish_token END,
+            audit_finish_time = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 8 HOUR),
+            audit_state = #{state}
+        WHERE id = #{id}
+          AND status IN ('SUCCEEDED', 'FAILED')
+          AND result_event_state IN ('PENDING', 'PUBLISHED')
+          AND audit_state = 'PENDING'
+        <include refid="deadlineCondition"/>
+    </update>
+
+    <update id="finishStats">
+        UPDATE tb_booking_request
+        SET result_event_state = CASE
+                WHEN audit_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN 'COMPLETED'
+                ELSE result_event_state END,
+            next_publish_time = CASE
+                WHEN audit_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN '9999-01-01 00:00:00'
+                ELSE next_publish_time END,
+            result_publish_token = CASE
+                WHEN audit_state IN ('DONE', 'EXPIRED', 'SKIPPED') THEN NULL
+                ELSE result_publish_token END,
+            stats_finish_time = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 8 HOUR),
+            stats_state = #{state}
+        WHERE id = #{id}
+          AND status IN ('SUCCEEDED', 'FAILED')
+          AND result_event_state IN ('PENDING', 'PUBLISHED')
+          AND stats_state = 'PENDING'
+        <include refid="deadlineCondition"/>
+    </update>
+</mapper>

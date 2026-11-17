@@ -23,7 +23,6 @@ import com.hmdp.utils.BookingAdmissionRedis;
 import com.hmdp.utils.BookingCache;
 import com.hmdp.utils.BookingException;
 import com.hmdp.utils.BookingOperationContext;
-import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
 
 import org.springframework.stereotype.Service;
@@ -59,9 +58,6 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
 
     @Resource
     private BookingAdminAccess bookingAdminAccess;
-
-    @Resource
-    private BookingRedisGuard bookingRedisGuard;
 
     @Resource
     private BookingCache bookingCache;
@@ -241,7 +237,6 @@ public class BookingOrderServiceImpl extends ServiceImpl<BookingOrderMapper, Boo
         if (slotMapper.release(order.getSlotId()) != 1) {
             throw new BookingException("名额释放失败，请联系管理员");
         }
-        bookingRedisGuard.cancelled(order);
         BookingRequestTask request = new BookingRequestTask();
         request.setId(order.getId());
         request.setUserId(order.getUserId());

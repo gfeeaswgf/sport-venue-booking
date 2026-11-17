@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#2348e5"><meta name="description" content="校园体育场馆预约平台，在线选择场地与时段，管理预约与入场凭证。"><title>我的预约 · 跃动校园</title><link rel="stylesheet" href="/css/element.css"><link rel="stylesheet" href="/css/sport.css?v=20261116-async1"></head>
+<body data-page="orders"><div id="app" v-cloak><sport-header :profile="profile" :active="active"></sport-header><main class="page-shell" v-loading="loading"><div v-if="error" class="error-banner" role="alert"><i class="el-icon-warning-outline"></i><span>{{error}}</span><button onclick="location.reload()">重新加载</button></div>
+<div class="page-title split-title"><div><span class="eyebrow muted">YOUR UPCOMING PLANS</span><h1>我的预约</h1><p>每一场期待，都在这里。查看详情获取入场凭证。</p></div><a href="/index.html" class="button primary">去预约 <i class="el-icon-plus"></i></a></div>
+<div v-if="requestError" class="error-banner" role="status">
+    <i class="el-icon-info"></i><span>{{requestError}}</span>
+    <button @click="restoreRequests">继续查询</button>
+</div>
+<div v-if="requestItems.length" class="order-list request-list" aria-live="polite">
+    <article v-for="r in requestItems" :key="r.requestId" class="panel order-card">
+        <div class="order-main">
+            <span class="status-pill" :class="r.state">{{r.state==='PROCESSING' ? '处理中' : '预约未成功'}}</span>
+            <template v-if="r.state==='PROCESSING'">
+                <h3>预约请求已受理，正在确认结果</h3>
+                <p v-if="r.paused">暂未确认最终结果，已暂停自动查询。请稍后继续查询。</p>
+                <p v-else>确认成功后将在这里打开预约详情与入场凭证。</p>
+                <p v-if="r.queryError">{{r.queryError}}</p>
+            </template>
+            <template v-else>
+                <h3>本次预约未成功</h3>
+                <p>{{r.message || '请重新选择场次后预约'}}</p>
+            </template>
+            <small class="order-number">预约请求 {{r.requestId}}</small>
+        </div>
+        <div class="order-actions">
+            <button v-if="r.state==='PROCESSING'" class="button outline" :disabled="r.querying" @click="queryRequest(r.requestId, true)">{{r.querying ? '查询中…' : '继续查询'}}</button>
+            <a v-else class="button outline" href="/index.html" @click.prevent="retryBooking">重新预约 <i class="el-icon-arrow-right"></i></a>
+        </div>
+    </article>
+</div>
+<div class="filter-row order-filter"><button v-for="s in [{value:'',label:'全部预约'},{value:'RESERVED',label:'待使用'},{value:'COMPLETED',label:'已完成'},{value:'CANCELLED',label:'已取消'},{value:'EXPIRED',label:'已过期'}]" :key="s.value" :class="{selected:orderStatus===s.value}" @click="filterOrders(s.value)">{{s.label}}</button><span class="result-count">共 {{total}} 笔预约</span></div><div class="order-list"><article class="panel order-card" v-for="o in orders" :key="o.id"><div class="order-date"><span>{{o.bookingDate.slice(0,4)}}</span><b>{{o.bookingDate.slice(5).replace('-',' / ')}}</b><small>{{u.time(o.startTime)}}–{{u.time(o.endTime)}}</small></div><div class="order-main"><span class="status-pill" :class="o.status">{{o.statusText}}</span><h3>{{o.venueName}} <span>· {{o.courtName}}</span></h3><p>{{o.realName}} · {{o.peopleCount}}人 <span v-if="o.verifyTime"> · 核销于 {{o.verifyTime.replace('T',' ')}}</span></p><small class="order-number">订单 {{o.id}}</small></div><div class="order-actions"><button class="button primary" @click="openDetail(o)">{{o.status==='RESERVED' ? '查看入场凭证' : '查看详情'}} <i class="el-icon-arrow-right"></i></button><button v-if="o.canCancel" class="text-button" @click="cancelOrder(o)" :disabled="busy">取消预约</button></div></article></div><div v-if="!loading && !error && !orders.length && !requestItems.length" class="panel empty-state"><i class="el-icon-tickets"></i><h3>这里还没有预约</h3><p>挑一个喜欢的项目，开启你的下一场运动。</p><a href="/index.html" class="button primary">去看看场馆</a></div><el-pagination v-if="total>10" background layout="prev, pager, next" :total="total" :page-size="10" :current-page.sync="current" @current-change="loadOrders"></el-pagination>
+<el-dialog title="预约详情与入场凭证" :visible.sync="detailVisible"><template v-if="detail"><div class="ticket-top"><span class="status-pill" :class="detail.status">{{detail.statusText}}</span><h2>{{detail.venueName}}</h2><p>{{detail.courtName}} · {{detail.bookingDate}}</p><strong>{{u.time(detail.startTime)}}—{{u.time(detail.endTime)}}</strong></div><div v-if="detail.status==='RESERVED'" class="verify-ticket"><span>入场核销码</span><b>{{detail.verifyCode}}</b><small>开场前30分钟至结束前，向场馆工作人员出示</small></div><div class="detail-fields"><div><span>预约人</span><b>{{detail.realName}} · {{detail.studentNo}}</b></div><div><span>手机号</span><b>{{detail.phone}}</b></div><div><span>入场人数</span><b>{{detail.peopleCount}} 人</b></div><div v-for="(p,i) in detail.companions" :key="i"><span>同行人 {{i+1}}</span><b>{{p.name}} · {{p.studentNo}}</b></div><div><span>订单号</span><b class="order-number">{{detail.id}}</b></div><div v-if="detail.verifyTime"><span>核销时间</span><b>{{detail.verifyTime.replace('T',' ')}}</b></div><div v-if="detail.cancelTime"><span>取消时间</span><b>{{detail.cancelTime.replace('T',' ')}}</b></div></div><button v-if="detail.canCancel" class="button outline full" :disabled="busy" @click="cancelOrder(detail)">取消本次预约</button><p v-else-if="detail.status==='RESERVED'" class="field-hint">已超出取消时限，请按时到场。</p></template></el-dialog></main><footer class="site-footer"><a class="footer-brand" href="/index.html">跃动校园 <span>CAMPUS SPORTS</span></a><span>体育场馆预约与管理平台 · 让运动成为校园日常</span></footer><sport-nav :active="active"></sport-nav></div><noscript>请开启 JavaScript 后使用场馆预约平台。</noscript><script src="/js/vue.js"></script><script src="/js/axios.min.js"></script><script src="/js/element.js"></script><script src="/js/sport-utils.js"></script><script src="/js/booking-request.js?v=20261116-async1"></script><script src="/js/common.js"></script><script src="/js/footer.js?v=20261114-nav1"></script><script src="/js/sport.js?v=20261116-async1"></script></body></html>

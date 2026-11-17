@@ -17,5 +17,4 @@ public class BookingRedisProperties {
     private long catalogTtlSeconds = 0;
 
     private long slotsTtlSeconds = 20;
-    private long pendingSeconds = 120;
 }

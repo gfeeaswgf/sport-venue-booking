@@ -36,4 +36,13 @@ public class BookingRequestTask {
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
     private LocalDateTime completeTime;
+
+    private String resultEventState;
+    private Integer resultPublishCount;
+    private String resultPublishToken;
+    private LocalDateTime resultLastPublishTime;
+    private String auditState;
+    private String statsState;
+    private LocalDateTime auditFinishTime;
+    private LocalDateTime statsFinishTime;
 }

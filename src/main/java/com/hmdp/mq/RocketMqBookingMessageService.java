@@ -2,16 +2,22 @@ package com.hmdp.mq;
 
 import com.hmdp.config.BookingMqProperties;
 import com.hmdp.service.IBookingMessageService;
+import com.hmdp.service.IBookingResultService;
+import com.hmdp.utils.BookingResultEvent;
+import com.hmdp.utils.BookingResultTask;
 
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.client.producer.SendStatus;
+import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.common.message.Message;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +27,9 @@ import java.util.concurrent.TimeUnit;
 public class RocketMqBookingMessageService implements IBookingMessageService, SmartLifecycle {
     private final BookingMqProperties properties;
     private final BookingMessageListener listener;
+    private final IBookingResultService results;
+    private final Map<BookingResultTask, DefaultMQPushConsumer> resultConsumers =
+            new EnumMap<>(BookingResultTask.class);
     private final BookingMqLog log = new BookingMqLog(RocketMqBookingMessageService.class);
     private volatile boolean running;
     private volatile DefaultMQProducer producer;
@@ -28,9 +37,12 @@ public class RocketMqBookingMessageService implements IBookingMessageService, Sm
     private ScheduledExecutorService connector;
 
     public RocketMqBookingMessageService(
-            BookingMqProperties properties, BookingMessageListener listener) {
+            BookingMqProperties properties,
+            BookingMessageListener listener,
+            IBookingResultService results) {
         this.properties = properties;
         this.listener = listener;
+        this.results = results;
     }
 
     @Override
@@ -98,6 +110,45 @@ public class RocketMqBookingMessageService implements IBookingMessageService, Sm
                 log.warn("预约MQ消费者启动失败", exception);
             }
         }
+        connectResultConsumers();
+    }
+
+    private void connectResultConsumers() {
+        for (BookingResultTask type : BookingResultTask.values()) {
+            if (resultConsumers.containsKey(type)) {
+                continue;
+            }
+            DefaultMQPushConsumer candidate = null;
+            try {
+                candidate = createResultConsumer(type);
+                candidate.setNamesrvAddr(properties.getNameServer().trim());
+                candidate.setVipChannelEnabled(false);
+                candidate.setClientCallbackExecutorThreads(2);
+                candidate.setMqClientApiTimeout(timeoutMillis());
+                candidate.setConsumeThreadMin(1);
+                candidate.setConsumeThreadMax(1);
+                candidate.setConsumeMessageBatchMaxSize(1);
+                candidate.setPullBatchSize(8);
+                candidate.setPullThresholdForQueue(16);
+                candidate.setAwaitTerminationMillisWhenShutdown(5000);
+                candidate.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
+                candidate.subscribe(properties.getResultTopic(), "*");
+                candidate.registerMessageListener(new BookingResultMessageListener(results, type));
+                candidate.start();
+                resultConsumers.put(type, candidate);
+            } catch (Exception exception) {
+                closeConsumer(candidate);
+                log.warn("预约结果消费组启动失败 group=" + type.name(), exception);
+            }
+        }
+    }
+
+    protected DefaultMQPushConsumer createResultConsumer(BookingResultTask type) {
+        String group =
+                type == BookingResultTask.AUDIT
+                        ? properties.getAuditConsumerGroup()
+                        : properties.getStatsConsumerGroup();
+        return new DefaultMQPushConsumer(group);
     }
 
     protected DefaultMQProducer createProducer() {
@@ -118,14 +169,26 @@ public class RocketMqBookingMessageService implements IBookingMessageService, Sm
         if (!BookingMessageListener.validRequestId(requestId)) {
             throw new IllegalArgumentException("预约请求ID格式错误");
         }
+        Message message =
+                new Message(properties.getTopic(), requestId.getBytes(StandardCharsets.US_ASCII));
+        message.setKeys(requestId);
+        sendMessage(message);
+    }
+
+    @Override
+    public void sendResult(String requestId) throws Exception {
+        Message message =
+                new Message(properties.getResultTopic(), BookingResultEvent.encode(requestId));
+        message.setKeys(requestId + ":result:v1");
+        sendMessage(message);
+    }
+
+    private void sendMessage(Message message) throws Exception {
         DefaultMQProducer current = producer;
         if (!running || current == null) {
             throw new IllegalStateException("预约MQ尚未连接");
         }
         // 3. 消息只含ID；SEND_OK以外结果也留给持久待办重试。
-        Message message =
-                new Message(properties.getTopic(), requestId.getBytes(StandardCharsets.US_ASCII));
-        message.setKeys(requestId);
         SendResult result = current.send(message, timeoutMillis());
         if (result == null || result.getSendStatus() != SendStatus.SEND_OK) {
             throw new IllegalStateException("预约MQ发送尚未确认");
@@ -141,6 +204,10 @@ public class RocketMqBookingMessageService implements IBookingMessageService, Sm
         }
         closeConsumer(consumer);
         consumer = null;
+        for (DefaultMQPushConsumer resultConsumer : resultConsumers.values()) {
+            closeConsumer(resultConsumer);
+        }
+        resultConsumers.clear();
         DefaultMQProducer current = producer;
         producer = null;
         closeProducer(current);

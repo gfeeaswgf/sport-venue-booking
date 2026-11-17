@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hmdp.mapper.VenueSlotMapper">
+
+    <!-- 同一场馆一次读取七天窗口；包括已关闭/满额场次，避免重新发布。 -->
+    <select id="findWindowForCourts" resultType="com.hmdp.entity.VenueSlot">
+        SELECT s.court_id, s.booking_date, s.start_time, s.end_time
+        FROM tb_venue_slot s
+        WHERE s.court_id IN
+        <foreach collection="courtIds" item="courtId" open="(" separator="," close=")">
+            #{courtId}
+        </foreach>
+          AND s.booking_date BETWEEN #{firstDate} AND #{lastDate}
+    </select>
+
+    <!-- Service按200行分批；不IGNORE冲突、不覆盖已有库存和关闭状态。 -->
+    <insert id="insertBatch">
+        INSERT INTO tb_venue_slot
+            (court_id, booking_date, start_time, end_time, capacity,
+             booked_count, enabled, create_time)
+        VALUES
+        <foreach collection="slots" item="slot" separator=",">
+            (#{slot.courtId}, #{slot.bookingDate}, #{slot.startTime}, #{slot.endTime},
+             #{slot.capacity}, #{slot.bookedCount}, #{slot.enabled}, #{slot.createTime})
+        </foreach>
+    </insert>
+</mapper>

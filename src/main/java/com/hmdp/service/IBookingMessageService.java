@@ -4,4 +4,6 @@ public interface IBookingMessageService {
     boolean isAvailable();
 
     void send(String requestId) throws Exception;
+
+    void sendResult(String requestId) throws Exception;
 }

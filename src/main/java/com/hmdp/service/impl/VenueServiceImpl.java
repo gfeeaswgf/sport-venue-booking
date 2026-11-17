@@ -28,14 +28,20 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import javax.annotation.Resource;
 
 @Service
 public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements IVenueService {
+
+    private static final int SLOT_INSERT_BATCH_SIZE = 200;
+    private static final int SLOT_WINDOW_COURT_LIMIT = 200;
+
     @Resource
     private BookingAdmissionRedis admission;
     @Resource
@@ -82,7 +88,30 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
                                 .eq("enabled", true)
                                 .orderByAsc("id"));
 
-        // 3.按场地和默认时间模板补齐缺失场次，保留已有场次状态
+        List<Long> courtIds = new ArrayList<>();
+        for (VenueCourt court : courts) {
+            if (Boolean.TRUE.equals(court.getEnabled())) {
+                courtIds.add(court.getId());
+            }
+        }
+        if (courtIds.isEmpty()) {
+            return 0;
+        }
+        // 3. 每个场馆集中读取一次，按场地和日期组织，避免逐场地访问数据库。
+        Map<Long, Map<LocalDate, List<VenueSlot>>> window = new HashMap<>();
+        for (int start = 0; start < courtIds.size(); start += SLOT_WINDOW_COURT_LIMIT) {
+            List<Long> group =
+                    courtIds.subList(
+                            start, Math.min(courtIds.size(), start + SLOT_WINDOW_COURT_LIMIT));
+            for (VenueSlot old : slotMapper.findWindowForCourts(group, firstDate, lastDate)) {
+                window.computeIfAbsent(old.getCourtId(), ignored -> new HashMap<>())
+                        .computeIfAbsent(old.getBookingDate(), ignored -> new ArrayList<>())
+                        .add(old);
+            }
+        }
+        List<VenueSlot> pending = new ArrayList<>(SLOT_INSERT_BATCH_SIZE);
+
+        // 4. 按默认模板只补缺口，所有写入仍属于当前场馆事务。
         int inserted = 0;
         for (VenueCourt court : courts) {
             if (!Boolean.TRUE.equals(court.getEnabled())) {
@@ -95,14 +124,11 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
             }
             List<LocalTime[]> times = defaultSlotTimes(court.getMode());
             Set<LocalDate> changedDates = new HashSet<>();
-            List<VenueSlot> existing =
-                    new ArrayList<>(
-                            slotMapper.selectList(
-                                    new QueryWrapper<VenueSlot>()
-                                            .eq("court_id", court.getId())
-                                            .ge("booking_date", firstDate)
-                                            .le("booking_date", lastDate)));
+            Map<LocalDate, List<VenueSlot>> courtWindow =
+                    window.computeIfAbsent(court.getId(), ignored -> new HashMap<>());
             for (LocalDate date = firstDate; !date.isAfter(lastDate); date = date.plusDays(1)) {
+                List<VenueSlot> existing =
+                        courtWindow.computeIfAbsent(date, ignored -> new ArrayList<>());
                 for (LocalTime[] time : times) {
                     if (!date.atTime(time[0]).isAfter(now)) {
                         continue;
@@ -130,8 +156,9 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
                                     .setBookedCount(0)
                                     .setEnabled(true)
                                     .setCreateTime(now);
-                    if (slotMapper.insert(slot) != 1) {
-                        throw new BookingException("自动发布场次失败");
+                    pending.add(slot);
+                    if (pending.size() == SLOT_INSERT_BATCH_SIZE) {
+                        insertSlotBatch(pending);
                     }
                     existing.add(slot);
                     inserted++;
@@ -139,12 +166,23 @@ public class VenueServiceImpl extends ServiceImpl<VenueMapper, Venue> implements
                 }
             }
 
-            // 4.记录发生新增的日期，事务提交后删除对应场次缓存
+            // 5. 仅登记新增日期，成功提交后再清理对应场次缓存。
             for (LocalDate date : changedDates) {
                 bookingCache.slotsChanged(court.getId(), date);
             }
         }
+        insertSlotBatch(pending);
         return inserted;
+    }
+
+    private void insertSlotBatch(List<VenueSlot> pending) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        if (slotMapper.insertBatch(pending) != pending.size()) {
+            throw new BookingException("自动发布场次批量写入未完成");
+        }
+        pending.clear();
     }
 
     private List<LocalTime[]> defaultSlotTimes(String mode) {

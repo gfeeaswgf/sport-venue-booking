@@ -3,39 +3,56 @@ package com.hmdp.mq;
 import com.hmdp.config.BookingMqProperties;
 import com.hmdp.entity.BookingRequestTask;
 import com.hmdp.mapper.BookingRequestMapper;
-import com.hmdp.service.IBookingCompletionService;
+import com.hmdp.mapper.BookingResultMapper;
 import com.hmdp.service.IBookingMessageService;
 import com.hmdp.service.IBookingRequestWorkerService;
+import com.hmdp.service.IBookingResultService;
+import com.hmdp.utils.BookingResultSignal;
 import com.hmdp.utils.BookingRules;
 
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
-/** 已提交请求是持久待办；发送成功后仍保留下一轮恢复机会。 */
+import javax.annotation.Resource;
+
+/** 复用持久请求待办；请求与结果各有有界发送线程，不互相排队等网络。 */
 @Component
 public class BookingRequestPublisher implements SmartLifecycle {
+
     private final BookingRequestMapper requests;
+    private final BookingResultMapper results;
     private final IBookingMessageService messages;
     private final IBookingRequestWorkerService worker;
-    private final IBookingCompletionService completion;
+    private final IBookingResultService completion;
     private final BookingMqProperties properties;
     private final BookingMqLog log = new BookingMqLog(BookingRequestPublisher.class);
+
     private volatile boolean running;
     private ScheduledExecutorService scheduler;
+    private boolean preferFailed;
+    private volatile long lifecycleVersion;
+
+    @Resource
+    private BookingResultSignal resultSignal = new BookingResultSignal();
 
     public BookingRequestPublisher(
             BookingRequestMapper requests,
+            BookingResultMapper results,
             IBookingMessageService messages,
             IBookingRequestWorkerService worker,
-            IBookingCompletionService completion,
+            IBookingResultService completion,
             BookingMqProperties properties) {
         this.requests = requests;
+        this.results = results;
         this.messages = messages;
         this.worker = worker;
         this.completion = completion;
@@ -48,86 +65,159 @@ public class BookingRequestPublisher implements SmartLifecycle {
             return;
         }
         running = true;
-        // 独占一个有界后台线程，MQ网络等待不占用场次自动发布调度器。
+        long version = ++lifecycleVersion;
+        AtomicInteger sequence = new AtomicInteger();
         scheduler =
-                Executors.newSingleThreadScheduledExecutor(
+                Executors.newScheduledThreadPool(
+                        2,
                         runnable -> {
-                            Thread thread = new Thread(runnable, "booking-mq-publish");
+                            Thread thread =
+                                    new Thread(
+                                            runnable,
+                                            "booking-mq-publish-" + sequence.incrementAndGet());
                             thread.setDaemon(true);
                             return thread;
                         });
         long delay = Math.max(200, Math.min(1000, properties.getPublishDelayMillis()));
         scheduler.scheduleWithFixedDelay(this::publishDue, 0, delay, TimeUnit.MILLISECONDS);
+        scheduler.execute(() -> runResultPublisher(version, delay));
+    }
+
+    private void runResultPublisher(long version, long activeDelay) {
+        long idleMaximum =
+                Math.max(activeDelay, Math.min(30000, properties.getResultIdleMaxDelayMillis()));
+        long delay = activeDelay;
+        while (running && lifecycleVersion == version && !Thread.currentThread().isInterrupted()) {
+            long started = System.nanoTime();
+            long observed = resultSignal.beginScan();
+            boolean workFound = publishResults();
+            delay = workFound ? activeDelay : Math.min(idleMaximum, delay * 2);
+            // 唤醒只打断空闲长等待；保持最小扫描间隔，不能每单增加两条查询。
+            long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            long minimum = Math.max(0, activeDelay - elapsed);
+            try {
+                resultSignal.awaitChange(observed, delay, minimum);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     public void publishDue() {
         try {
-            // 1. 独立调度只读已提交记录，认领条件保证多实例不会同时发布。
             LocalDateTime now = BookingRules.now();
-            List<BookingRequestTask> tasks =
-                    requests.findDue(now, Math.max(1, Math.min(256, properties.getBatchSize())));
+            List<BookingRequestTask> tasks = requests.findDue(now, batchSize());
+            // 1. MQ离线也先关闭本批到期请求，只登记结果事件，不执行后处理。
             for (BookingRequestTask task : tasks) {
-                if (Thread.currentThread().isInterrupted()) {
-                    return;
-                }
-                // 2. 先补偿终态和关闭过期记录，MQ离线也不能跳过。
-                if (localWork(task, now)) {
-                    publish(task, now);
+                if (expired(task, now)) {
+                    dispatchRequest(task, now);
                 }
             }
-            // 3. 本批只给网络发送500毫秒预算，单次发送仍受SDK超时限制。
-            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            long budget = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
             for (BookingRequestTask task : tasks) {
-                if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline) {
+                if (Thread.currentThread().isInterrupted() || System.nanoTime() >= budget) {
                     return;
                 }
-                if (!localWork(task, now)) {
-                    publish(task, now);
+                if (!expired(task, now)) {
+                    dispatchRequest(task, now);
                 }
             }
         } catch (Exception exception) {
-            log.warn("扫描预约发布待办失败", exception);
+            log.warn("扫描预约请求待办失败", exception);
         }
     }
 
-    private void publish(BookingRequestTask task, LocalDateTime now) {
+    boolean publishResults() {
+        try {
+            LocalDateTime now = BookingRules.now();
+            int limit = batchSize();
+            List<BookingRequestTask> succeeded = results.findDue("SUCCEEDED", now, limit);
+            List<BookingRequestTask> failed = results.findDue("FAILED", now, limit);
+            List<BookingRequestTask> first = preferFailed ? failed : succeeded;
+            List<BookingRequestTask> second = preferFailed ? succeeded : failed;
+            preferFailed = !preferFailed;
+            List<BookingRequestTask> tasks = new ArrayList<>();
+            // 2. 两种终态交替取，最多发送一个批次，避免失败事件长期饥饿。
+            for (int index = 0;
+                    tasks.size() < limit && (index < first.size() || index < second.size());
+                    index++) {
+                if (index < first.size()) {
+                    tasks.add(first.get(index));
+                }
+                if (tasks.size() < limit && index < second.size()) {
+                    tasks.add(second.get(index));
+                }
+            }
+            long budget = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+            for (BookingRequestTask task : tasks) {
+                if (Thread.currentThread().isInterrupted() || System.nanoTime() >= budget) {
+                    return !tasks.isEmpty();
+                }
+                dispatchResult(task, now);
+            }
+            return !tasks.isEmpty();
+        } catch (Exception exception) {
+            log.warn("扫描预约结果待办失败", exception);
+            return true;
+        }
+    }
+
+    private void dispatchRequest(BookingRequestTask task, LocalDateTime now) {
         try {
             if (requests.claim(task.getId(), now, now.plusSeconds(30)) == 0) {
                 return;
             }
-            // 终态成功完成审计后由completion标记不再扫描，异常保留本轮认领窗口。
-            if (BookingMessageListener.terminal(task)) {
-                completion.record(task);
-                return;
-            }
-            // MQ离线也推进认领窗口，避免旧记录挡住后续过期任务。
-            if (task.getExpireTime() != null && !task.getExpireTime().isAfter(now)) {
-                BookingRequestTask closed = worker.fail(task.getId(), "预约请求已过期，请重新预约");
-                if (BookingMessageListener.terminal(closed)) {
-                    completion.record(closed);
-                }
-                return;
-            }
-            // 只在后台等待SEND_OK；发送异常保留ACCEPTED，30秒后再次恢复。
-            if (messages.isAvailable()) {
+            if (expired(task, now)) {
+                worker.fail(task.getId(), "预约请求已过期，请重新预约");
+            } else if (messages.isAvailable()) {
                 messages.send(task.getId());
             }
         } catch (Exception exception) {
-            if (exception instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            log.warn("预约待办发布或过期处理失败", exception);
+            preserveInterrupt(exception);
+            log.warn("预约请求发布或关闭暂未完成", exception);
         }
     }
 
-    private boolean localWork(BookingRequestTask task, LocalDateTime now) {
-        return BookingMessageListener.terminal(task)
-                || (task.getExpireTime() != null && !task.getExpireTime().isAfter(now));
+    private void dispatchResult(BookingRequestTask task, LocalDateTime now) {
+        try {
+            String token = UUID.randomUUID().toString().replace("-", "");
+            if (results.claim(task.getId(), token, now, now.plusSeconds(30)) == 0) {
+                return;
+            }
+            // 3. 只做期限结算，Redis效果和COUNT仍属于各自消费组。
+            if (completion.expireTasks(task)) {
+                return;
+            }
+            if (messages.isAvailable()) {
+                messages.sendResult(task.getId());
+                // 4. 令牌及未完成条件保护：消费者先完成或旧发送者迟到均不重开。
+                results.published(task.getId(), token, BookingRules.now());
+            }
+        } catch (Exception exception) {
+            preserveInterrupt(exception);
+            log.warn("预约结果发布暂未确认，保留持久恢复机会", exception);
+        }
+    }
+
+    private int batchSize() {
+        return Math.max(1, Math.min(256, properties.getBatchSize()));
+    }
+
+    private boolean expired(BookingRequestTask task, LocalDateTime now) {
+        return task.getExpireTime() != null && !task.getExpireTime().isAfter(now);
+    }
+
+    private void preserveInterrupt(Exception exception) {
+        if (exception instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Override
     public synchronized void stop() {
         running = false;
+        lifecycleVersion++;
         if (scheduler != null) {
             scheduler.shutdownNow();
             scheduler = null;

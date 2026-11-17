@@ -1,18 +1,12 @@
 package com.hmdp;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 import com.hmdp.config.BookingRedisProperties;
-import com.hmdp.entity.BookingOrder;
 import com.hmdp.entity.Venue;
 import com.hmdp.entity.VenueSlot;
 import com.hmdp.utils.BookingCache;
-import com.hmdp.utils.BookingException;
-import com.hmdp.utils.BookingRedisGuard;
 import com.hmdp.utils.BookingRules;
-import com.hmdp.utils.RedisConstants;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -20,7 +14,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisPassword;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
@@ -29,7 +22,6 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionSynchronizationUtils;
@@ -40,11 +32,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** 仅连接显式测试地址；不加载 Spring Boot 或业务连接配置。 */
@@ -53,7 +40,6 @@ class BookingRedisIntegrationTest {
     static LettuceConnectionFactory factory;
     static StringRedisTemplate redis;
     BookingRedisProperties properties;
-    BookingRedisGuard guard;
     BookingCache cache;
     VenueSlot slot;
     String prefix;
@@ -94,7 +80,6 @@ class BookingRedisIntegrationTest {
         prefix = "test:booking-redis:" + UUID.randomUUID() + ":";
         properties = new BookingRedisProperties();
         properties.setNamespace(prefix);
-        guard = new BookingRedisGuard(redis, properties);
         cache = new BookingCache(redis, properties);
         slot =
                 new VenueSlot()
@@ -145,22 +130,6 @@ class BookingRedisIntegrationTest {
         }
     }
 
-    String stock() {
-        return prefix + RedisConstants.BOOKING_STOCK_KEY + slot.getId();
-    }
-
-    String user(Long id) {
-        return prefix + RedisConstants.BOOKING_USER_KEY + slot.getBookingDate() + ":" + id;
-    }
-
-    BookingOrder order(String id) {
-        return new BookingOrder()
-                .setId(id)
-                .setSlotId(slot.getId())
-                .setUserId(7L)
-                .setBookingDate(slot.getBookingDate());
-    }
-
     @Test
     void catalogChangesDeleteFixedQueryKeysInBatchesAfterCommit() {
         for (int i = 0; i < 125; i++) {
@@ -183,159 +152,6 @@ class BookingRedisIntegrationTest {
         assertTrue(redis.hasKey(prefix + "cache:booking:venue:1"));
         assertEquals(-1L, redis.getExpire(prefix + "cache:booking:venue:1"));
         assertEquals("新场馆", cache.get("venue:1", Venue.class, () -> null).getName());
-    }
-
-    @Test
-    void commitConfirmsOwnedMarkerAndCancellationOnlyChangesRedisAfterCommit() {
-        begin();
-        guard.reserve(slot, 7L, "first");
-        assertEquals("0", redis.opsForValue().get(stock()));
-        assertEquals("P:first", redis.opsForValue().get(user(7L)));
-        finish(true);
-        assertEquals("C:first", redis.opsForValue().get(user(7L)));
-        assertTrue(redis.getExpire(user(7L)) > 120);
-        begin();
-        guard.cancelled(order("first"));
-        assertEquals("C:first", redis.opsForValue().get(user(7L)));
-        finish(false);
-        assertEquals("C:first", redis.opsForValue().get(user(7L)));
-        begin();
-        guard.cancelled(order("first"));
-        finish(true);
-        assertNull(redis.opsForValue().get(user(7L)));
-        assertNull(redis.opsForValue().get(stock()));
-        begin();
-        guard.reserve(slot, 7L, "second");
-        finish(true);
-        assertEquals("C:second", redis.opsForValue().get(user(7L)));
-    }
-
-    @Test
-    void databaseRollbackReleasesOnlyThisOrderAndAllowsRetry() {
-        begin();
-        guard.reserve(slot, 7L, "failed");
-        finish(false);
-        assertNull(redis.opsForValue().get(stock()));
-        assertNull(redis.opsForValue().get(user(7L)));
-        begin();
-        guard.reserve(slot, 7L, "retry");
-        finish(true);
-        begin();
-        guard.cancelled(order("failed"));
-        finish(true);
-        assertEquals("C:retry", redis.opsForValue().get(user(7L)));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void timeoutAfterRedisExecutedStillCleansActualPreoccupationOnRollback() {
-        StringRedisTemplate unstable = spy(redis);
-        doAnswer(
-                        call -> {
-                            Object result = call.callRealMethod();
-                            assertEquals(0L, result);
-                            throw new RedisConnectionFailureException(
-                                    "reply lost after script executed");
-                        })
-                .when(unstable)
-                .execute(
-                        any(RedisScript.class),
-                        anyList(),
-                        anyString(),
-                        anyString(),
-                        anyString(),
-                        anyString());
-        BookingRedisGuard unreliable = new BookingRedisGuard(unstable, properties);
-        begin();
-        assertThrows(BookingException.class, () -> unreliable.reserve(slot, 7L, "timed-out"));
-        assertEquals("P:timed-out", redis.opsForValue().get(user(7L)));
-        finish(false);
-        assertNull(redis.opsForValue().get(user(7L)));
-        assertNull(redis.opsForValue().get(stock()));
-    }
-
-    @Test
-    void pendingRequestAcrossDifferentSlotsForSameUserIsRejected() {
-        begin();
-        guard.reserve(slot, 7L, "pending");
-        VenueSlot other =
-                new VenueSlot()
-                        .setId(101L)
-                        .setCourtId(11L)
-                        .setBookingDate(slot.getBookingDate())
-                        .setCapacity(1)
-                        .setBookedCount(0);
-        assertThrows(BookingException.class, () -> guard.reserve(other, 7L, "another"));
-        assertEquals("P:pending", redis.opsForValue().get(user(7L)));
-        finish(false);
-    }
-
-    @Test
-    void concurrentDifferentVenueRequestsForOneUserOnlyPreoccupyOnce() throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(8);
-        CountDownLatch attempted = new CountDownLatch(8);
-        AtomicInteger accepted = new AtomicInteger();
-        try {
-            List<Future<?>> tasks = new ArrayList<>();
-            for (int i = 0; i < 8; i++) {
-                final int index = i;
-                tasks.add(
-                        pool.submit(
-                                () -> {
-                                    boolean reserved = false;
-                                    begin();
-                                    try {
-                                        VenueSlot other =
-                                                new VenueSlot()
-                                                        .setId(200L + index)
-                                                        .setCourtId(20L + index)
-                                                        .setBookingDate(slot.getBookingDate())
-                                                        .setCapacity(1)
-                                                        .setBookedCount(0);
-                                        try {
-                                            guard.reserve(other, 7L, "parallel-" + index);
-                                            reserved = true;
-                                            accepted.incrementAndGet();
-                                        } catch (BookingException expected) {
-                                        }
-                                        attempted.countDown();
-                                        assertTrue(attempted.await(3, TimeUnit.SECONDS));
-                                        finish(reserved);
-                                    } catch (InterruptedException e) {
-                                        Thread.currentThread().interrupt();
-                                        throw new IllegalStateException(e);
-                                    } finally {
-                                        if (TransactionSynchronizationManager
-                                                .isSynchronizationActive()) {
-                                            finish(false);
-                                        }
-                                    }
-                                }));
-            }
-            for (Future<?> task : tasks) {
-                task.get(5, TimeUnit.SECONDS);
-            }
-        } finally {
-            pool.shutdownNow();
-        }
-        assertEquals(1, accepted.get());
-        assertTrue(redis.opsForValue().get(user(7L)).startsWith("C:parallel-"));
-    }
-
-    @Test
-    void lockedDatabaseSnapshotRepairsStaleStockAndStaleConfirmedMarker() {
-        redis.opsForValue().set(stock(), "0");
-        redis.opsForValue().set(user(7L), "C:cancelled-earlier");
-        begin();
-        guard.reserve(slot, 7L, "new");
-        finish(true);
-        assertEquals("0", redis.opsForValue().get(stock()));
-        assertEquals("C:new", redis.opsForValue().get(user(7L)));
-        slot.setBookedCount(1);
-        begin();
-        assertThrows(BookingException.class, () -> guard.reserve(slot, 8L, "full"));
-        finish(false);
-        assertNull(redis.opsForValue().get(user(8L)));
     }
 
     @Test

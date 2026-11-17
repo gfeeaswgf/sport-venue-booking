@@ -1,7 +1,6 @@
 package com.hmdp.mq;
 
 import com.hmdp.entity.BookingRequestTask;
-import com.hmdp.service.IBookingCompletionService;
 import com.hmdp.service.IBookingRequestWorkerService;
 import com.hmdp.utils.BookingException;
 
@@ -18,13 +17,10 @@ import java.util.List;
 @Component
 public class BookingMessageListener implements MessageListenerConcurrently {
     private final IBookingRequestWorkerService worker;
-    private final IBookingCompletionService completion;
     private final BookingMqLog log = new BookingMqLog(BookingMessageListener.class);
 
-    public BookingMessageListener(
-            IBookingRequestWorkerService worker, IBookingCompletionService completion) {
+    public BookingMessageListener(IBookingRequestWorkerService worker) {
         this.worker = worker;
-        this.completion = completion;
     }
 
     @Override
@@ -57,8 +53,7 @@ public class BookingMessageListener implements MessageListenerConcurrently {
                 if (!terminal(task)) {
                     return ConsumeConcurrentlyStatus.RECONSUME_LATER;
                 }
-                // 3. 终态审计和统计成功才ACK；重复消息由worker锁行幂等。
-                completion.record(task);
+                // 3. 核心事务已提交，结果待办也已登记；不等待审计、统计和MQ发送。
             } catch (Exception exception) {
                 log.warn("预约消息处理暂未完成", exception);
                 return ConsumeConcurrentlyStatus.RECONSUME_LATER;
